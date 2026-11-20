@@ -1,0 +1,731 @@
+---
+title: "Smokers"
+output: html_document
+date: "2025-04-20"
+---
+
+Libraries
+```{r}
+library(dplyr)
+library(ggplot2)
+library(gridExtra)
+library(reshape2)
+library(corrplot)
+library(DescTools)
+library(reshape2)
+library(tidyr)
+library(ggcorrplot)
+library(plotly)
+library(scatterplot3d)
+library(ggbiplot)
+library(pheatmap)
+library(clustMixType)
+library(FactoMineR)
+library(factoextra)
+library(PCAmixdata)
+library(cluster)
+library(dendextend)
+library(caTools)
+library(pROC)
+library(broom)
+library(glmnet)
+library(rpart)
+library(rpart.plot)
+```
+
+Importing the dataset and a brief summary
+```{r}
+dataset <- read.csv("smokers.csv")
+head(dataset)
+summary(dataset)
+str(dataset)
+tail(dataset)
+```
+#EDA - Visualizing Features
+Checking and deleting null values (since zero values are meaningful it doesn't make sense to delete them)
+```{r}
+sum(is.na(dataset))
+sum(dataset == 0, na.rm = TRUE)
+```
+Distribution of smokers (outcome variable)
+```{r}
+ggplot(dataset, aes(x = as.factor(smoking))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Distribution of smokers", x = "Smoker (No = 0, Yes = 1 )", y = "Count") +
+  theme_minimal()
+```
+
+
+Checking distributions of other variables
+```{r}
+dataset %>%
+  select(where(is.numeric)) %>%
+  pivot_longer(everything()) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "lightblue", color = "black") +
+  facet_wrap(~ name, scales = "free") +
+  theme_minimal()
+```
+Box plot for checking outliers 
+In analysis that involve medical variables it can be useful not to delete extreme values because they can be very useful to detect positive or non positive individuals
+```{r}
+df_long <- dataset %>%
+  pivot_longer(cols = everything(), names_to = "Variable", values_to = "Value")
+ggplot(df_long, aes(x = "", y = Value)) +
+  geom_boxplot(fill = "lightblue", outlier.color = "red", outlier.size = 2) +
+  facet_wrap(~ Variable, scales = "free") +
+  theme_minimal() +
+  labs(title = "Boxplots",
+       x = NULL,
+       y = "Value") +
+  theme(strip.text = element_text(face = "bold"))
+```
+
+Correlation matrix
+```{r}
+cor_matrix <- cor(dataset, use = "complete.obs")
+corrplot(cor_matrix, method = "color", type = "upper", tl.cex = 0.8, col = colorRampPalette(c("blue", "white", "red"))(200),)
+ggcorrplot(cor_matrix, 
+           hc.order = TRUE,      
+           type = "full",        
+           lab = TRUE,           
+           lab_size = 2,         
+           colors = c("blue", "white", "red"),
+           title = "Correlation Matrix with Values",
+           ggtheme = theme_minimal())
+```
+
+
+Checking for normality of some of the variables
+```{r}
+
+for (var in names(dataset)) {
+  qqnorm(dataset[[var]], main = paste("Q-Q Plot of", var))
+  qqline(dataset[[var]], col = "red")
+}
+
+```
+
+
+
+Applying the log to non normal variables (age, height, weight, waist, systolic, relaxation, fasting.blood.sugar, cholesterol, triglyceride, HDL,  hemoglobin, AST, Gtp)
+```{r}
+vars_to_log <- c("age", "height.cm.", "weight.kg.", "waist.cm.", "systolic", "relaxation", "fasting.blood.sugar", "Cholesterol", "triglyceride", "HDL", "hemoglobin", "AST", "Gtp")
+dataset <- dataset %>%
+  mutate(across(all_of(vars_to_log), ~ log(. + 1)))
+summary(dataset[vars_to_log])
+summary(dataset)
+head(dataset)
+```
+
+Checking again distributions
+```{r}
+dataset %>%
+  select(where(is.numeric)) %>%
+  pivot_longer(everything()) %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "lightblue", color = "black") +
+  facet_wrap(~ name, scales = "free") +
+  theme_minimal()
+```
+
+#UNSUPERVISED LEARNING
+PCA
+Before applying the algorithm it is better to create a dataset with all the variables scaled and putting some variables as factors
+```{r}
+num_vars <- c("age", "height.cm.", "weight.kg.", "waist.cm.", "eyesight.left.", "eyesight.right.", "systolic", "relaxation", "fasting.blood.sugar", "Cholesterol", "triglyceride", "HDL", "LDL", "hemoglobin", "Urine.protein", "serum.creatinine", "AST", "ALT", "Gtp")
+scaled_dataset <- dataset %>%
+  mutate(across(all_of(num_vars), scale))
+scaled_dataset$hearing.left. <- as.factor(dataset$hearing.left.)
+scaled_dataset$hearing.right. <- as.factor(dataset$hearing.right.)
+scaled_dataset$dental.caries <- as.factor(dataset$dental.caries)
+scaled_dataset$smoking <- as.factor(dataset$smoking)
+str(scaled_dataset)
+```
+
+Computing Pca and showing a summary (considering only numerical variables)
+```{r}
+numeric_vars <- scaled_dataset[, sapply(scaled_dataset, is.numeric)]
+pca<-princomp(numeric_vars, cor=T)
+summary(princomp(numeric_vars, cor=T))
+```
+
+Plotting the screeplot to choose the best number of components (elbow curve and barplot)
+Most of the variance is explained by the first 2 components
+```{r}
+screeplot(pca, type = "lines", main = "Scree Plot")
+screeplot(pca, type = "barplot", main = "Scree Plot")
+```
+
+Plotting cumulative proportion of variance explained by the components
+```{r}
+pve <- pca$sdev^2 / sum(pca$sdev^2)
+plot(cumsum(pve), xlab="Component", ylab="Cumulative Proportion of Variance Explained", ylim=c(0,1),type='b')
+```
+
+Plotting the scores using the first two components (observations don't seem to group in two different areas, even if smokers are more on the left while non smokers are more on the right, but there are also a lot of observations overlapping)
+```{r}
+scores <- as.data.frame(pca$scores)
+scores$smoking <- dataset$smoking
+ggplot(scores, aes(x = Comp.1, y = Comp.2, color = as.factor(smoking), label = rownames(dataset))) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray") +
+  labs(
+    title = "PCA on Smokers Dataset",
+    x = "PC1",
+    y = "PC2",
+    color = "Smoking"
+  ) +
+  theme_minimal()
+```
+
+Plotting other components (comp1vsComp3)
+```{r}
+ggplot(scores, aes(x = Comp.1, y = Comp.3, color = as.factor(smoking), label = rownames(dataset))) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray") +
+  labs(
+    title = "PCA on Smokers Dataset",
+    x = "PC1",
+    y = "PC3",
+    color = "Smoking"
+  ) +
+  theme_minimal()
+```
+
+3D plot of the first 3 components (also in this case )
+```{r}
+plot_ly(scores, x = ~Comp.1, y = ~Comp.2, z = ~Comp.3,
+        color = ~smoking, colors = c("steelblue", "tomato"),
+        type = "scatter3d", mode = "markers") %>%
+  layout(title = "3D PCA Plot (PC1 vs PC2 vs PC3)",
+         scene = list(xaxis = list(title = "PC1"),
+                      yaxis = list(title = "PC2"),
+                      zaxis = list(title = "PC3")))
+col_group <- ifelse(dataset$smoking == 1, "tomato", "steelblue")
+scatterplot3d(scores$Comp.1, scores$Comp.2, scores$Comp.3,
+              color = col_group,
+              pch = 19,
+              xlab = "PC1", ylab = "PC2", zlab = "PC3",
+              main = "3D PCA Plot (PC1 - PC2 - PC3)")
+legend("topright", legend = c("Non smoker", "Smoker"),
+       col = c("steelblue", "tomato"), pch = 19)
+```
+
+Biplot of pca
+```{r}
+biplot(pca, cex = 0, col = c("gray", "red"), main = "Biplot of pca" )
+ggbiplot(pca,
+         groups = as.factor(dataset$smoking),   
+         ellipse = TRUE,                        
+         circle = TRUE,                         
+         var.axes = TRUE,                       
+         labels = NULL                          
+         ) +
+  scale_color_manual(values = c("steelblue", "tomato")) +  
+  labs(title = "Biplot PCA - Smoking Status",
+       color = "Smoking") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+Checking the loadings to see how much every variable contributes to the formation of the first 4 components
+```{r}
+loadings <- pca$loadings
+loadings[, 1:4]
+```
+
+Plotting the heatmap of the loadings ( to see again the variables that contributes the most to each component)
+```{r}
+heatmap(pca$loadings[, 1:4],
+        main = "Heatmap of loadings (first 4 PC)",
+        Colv = NA, scale = "none")
+load_matrix <- as.matrix(unclass(pca$loadings[, 1:5]))
+pheatmap(load_matrix,
+         main = "Heatmap of loadings (first 4 PC)",
+         color = colorRampPalette(c("blue", "white", "red"))(100))
+
+```
+To include also categorical variables we can use the PCAmix
+```{r}
+categoric_vars <- scaled_dataset[sapply(scaled_dataset, is.factor)]
+res_mix <- PCAmix(X.quanti = numeric_vars, X.quali = categoric_vars, rename.level = TRUE, graph = FALSE)
+plot(res_mix, choice = "ind", label = FALSE)
+```
+Checking how much variance is explained by each component
+```{r}
+res_mix$eig
+```
+Checking the contribution of each variable to the formation of the components
+```{r}
+res_mix$quanti$contrib
+res_mix$quali$contrib
+```
+Scree plot
+```{r}
+barplot(res_mix$eig[, 2],
+        names.arg = paste0("Dim", 1:nrow(res_mix$eig)),
+        main = "Scree plot",
+        xlab = "Component",
+        ylab = "% of variance explained",
+        col = "skyblue")
+eig_vals <- res_mix$eig
+scree_df <- data.frame(
+  Dimension = factor(1:nrow(eig_vals)),
+  Variance = eig_vals[, 2]
+)
+
+ggplot(scree_df, aes(x = Dimension, y = Variance)) +
+  geom_line(group = 1, color = "steelblue", size = 1) +
+  geom_point(color = "darkblue", size = 2) +
+  theme_minimal(base_size = 14) +
+  labs(
+    title = "Scree plot",
+    x = "Component",
+    y = "% of variance explained"
+  )
+```
+Heatmap of contribution of the variables 
+```{r}
+contrib_quanti <- res_mix$quanti$contrib
+contrib_quali <- res_mix$quali$contrib
+contrib_all <- rbind(contrib_quanti, contrib_quali)
+contrib_long <- melt(contrib_all)
+colnames(contrib_long) <- c("Variable", "Dimension", "Contribution")
+ggplot(contrib_long, aes(x = Dimension, y = Variable, fill = Contribution)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Heatmap of contribution of the variables",
+    x = "Component",
+    y = "Variable"
+  ) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+CLUSTERING
+K-Means
+Kprototypes(for categorical and numerical variables and to join the result, uses euclidean distance for numerical and dissimilarity for categorical) 
+2 clusters
+```{r}
+set.seed(123) 
+res_kproto2 <- kproto(scaled_dataset, k = 2)
+table(res_kproto2$cluster)
+```
+Graphical result
+```{r}
+fviz_pca_ind(pca,
+             geom.ind = "point",
+             col.ind = as.factor(res_kproto2$cluster),
+             palette = "jco", 
+             addEllipses = TRUE,
+             legend.title = "Clusters")
+```
+
+
+3 clusters
+```{r}
+set.seed(123) 
+res_kproto3 <- kproto(scaled_dataset, k = 3)
+table(res_kproto3$cluster)
+```
+Plotting the result of the clustering
+```{r}
+fviz_pca_ind(pca,
+             geom.ind = "point",
+             col.ind = as.factor(res_kproto3$cluster),
+             palette = "jco", 
+             addEllipses = TRUE,
+             legend.title = "Clusters")
+#plot(res_kproto3)
+```
+4 clusters 
+```{r}
+set.seed(123) 
+res_kproto4 <- kproto(scaled_dataset, k = 4)
+table(res_kproto4$cluster)
+```
+Graphical result
+```{r}
+fviz_pca_ind(pca,
+             geom.ind = "point",
+             col.ind = as.factor(res_kproto4$cluster),
+             palette = "jco", 
+             addEllipses = TRUE,
+             legend.title = "Clusters")
+```
+
+
+Optimal number of clusters: elbow curve (optimal number between 2-3-4)
+```{r}
+wss <- numeric(10)
+for (k in 1:10) {
+  model <- kproto(scaled_dataset, k)
+  wss[k] <- model$tot.withinss
+}
+
+plot(1:10, wss, type = "b", pch = 19,
+     xlab = "Number of clusters",
+     ylab = "Within-cluster sum of squares",
+     main = "Elbow curve for K-prototypes")
+```
+
+Hierarchical clustering (using gower distance because of factors variables) - Dendrogram
+```{r}
+numeric_vars <- c("age", "height.cm.", "weight.kg.", "waist.cm.", "systolic",
+                  "relaxation", "fasting.blood.sugar", "Cholesterol", "triglyceride",
+                  "HDL", "LDL", "hemoglobin", "Urine.protein", "serum.creatinine",
+                  "AST", "ALT", "Gtp", "eyesight.left.", "eyesight.right.")
+
+scaled_dataset[numeric_vars] <- lapply(scaled_dataset[numeric_vars], as.numeric)
+categorical_vars <- c("smoking", "hearing.left.", "hearing.right.", "dental.caries")
+scaled_dataset[categorical_vars] <- lapply(scaled_dataset[categorical_vars], as.factor)
+set.seed(123)
+sample_indices <- sample(1:nrow(dataset), 500)
+sampled_data <- dataset[sample_indices, ]
+
+gower_dist <- daisy(sampled_data, metric = "gower")
+hc <- hclust(gower_dist, method = "ward.D2")
+plot(hc, labels = FALSE, hang = -1, main = "Dendrogram (Gower distance)")
+```
+Cut at 3
+```{r}
+plot(hc, labels = FALSE, hang = -1)
+rect.hclust(hc, k = 3, border = 2:4)
+```
+
+How many obs in each cluster
+```{r}
+cluster_cut <- cutree(hc, k = 3)
+table(cluster_cut)
+```
+Viewing how clusters are separated in the space
+```{r}
+mds <- cmdscale(gower_dist, k = 2)
+df_mds <- data.frame(Dim1 = mds[,1],
+                     Dim2 = mds[,2],
+                     Cluster = as.factor(cluster_cut))
+ggplot(df_mds, aes(x = Dim1, y = Dim2, color = Cluster)) +
+  geom_point(size = 2, alpha = 0.7) +
+  stat_ellipse(type = "norm", level = 0.95, linetype = 2) +
+  labs(title = "Clusters",
+       x = "Dimension 1", y = "Dimension 2") +
+  theme_minimal()
+```
+Silhouette scor: low value means bad cluster separation
+```{r}
+sil <- silhouette(cluster_cut, gower_dist)
+fviz_silhouette(sil)  # da factoextra
+```
+
+Supervised learning 
+Splitting the dataset in train and test
+```{r}
+set.seed(123)  
+split <- sample.split(scaled_dataset$smoking, SplitRatio = 0.65)
+train <- subset(scaled_dataset, split == TRUE)
+test  <- subset(scaled_dataset, split == FALSE)
+```
+
+Logistic model with all the variables
+```{r}
+logit_model <- glm(smoking ~ ., data = train, family = "binomial")
+summary(logit_model)
+```
+
+Confusion matrix and accuracy - complete model
+```{r}
+pred_prob <- predict(logit_model, newdata = test, type = "response")
+pred_class <- ifelse(pred_prob > 0.5, 1, 0) #choosing 0,5 as thrashold
+conf_matrix <- table(Predicted = pred_class, Actual = test$smoking)
+print(conf_matrix)
+accuracy <- sum(diag(conf_matrix)) / sum(conf_matrix)
+cat("Accuracy:", round(accuracy, 4), "\n")
+```
+ROC curve and AUC value - complete model
+```{r}
+roc_curve <- roc(test$smoking, pred_prob)
+plot(roc_curve, col = "#2E9CCA", main = "ROC Curve")
+auc_val <-auc(roc_curve)
+text(x = 0.6, y = 0.2, labels = paste("AUC =", round(auc_val, 3)), col = "blue", cex = 1.2)
+```
+Effect of each variable
+```{r}
+coeffs <- tidy(logit_model)
+coeffs <- coeffs[order(abs(coeffs$estimate), decreasing = TRUE), ]
+
+ggplot(coeffs, aes(x = reorder(term, estimate), y = estimate)) +
+  geom_col(fill = "#FF6B6B") +
+  coord_flip() +
+  labs(title = "Variables' effect", x = "Variable", y = "Coefficient") +
+  theme_minimal()
+```
+Phi coefficient
+```{r}
+conf_mat <- table(Predicted = pred_class, Actual = test$smoking)
+
+TN <- 7037
+FP <- 1596
+FN <- 2024
+TP <- 2987
+
+phi <- (TP * TN - FP * FN) / sqrt((TP + FP) * (TP + FN) * (TN + FP) * (TN + FN))
+phi
+```
+
+Lasso regression to choose the optimal number of covariates 
+This lasso has been done already with a cross validation, so that we can choose the best value of the parameter lambda and so the optimal number of coefficients 
+```{r}
+X <- model.matrix(smoking ~ ., data = train)[, -1]
+y <- train$smoking
+cv_lasso <- cv.glmnet(X, y, family = "binomial", alpha = 1)
+plot(cv_lasso$glmnet.fit, xvar = "lambda", label = TRUE)
+plot(cv_lasso)
+
+```
+Seeing how coefficients become different from zero as lambda gets higher
+```{r}
+lambdas <- cv_lasso$lambda
+beta <- as.matrix(cv_lasso$glmnet.fit$beta)
+beta_binary <- beta != 0  
+beta_binary_t <- t(beta_binary)
+beta_binary_df <- as.data.frame(beta_binary_t)
+beta_binary_df$Lambda <- lambdas
+beta_long <- pivot_longer(beta_binary_df, 
+                          cols = -Lambda, 
+                          names_to = "Variable", 
+                          values_to = "Selected")
+
+ggplot(beta_long, aes(x = Variable, y = log(Lambda), fill = Selected)) +
+  geom_tile(color = "white") +
+  scale_fill_manual(values = c("white", "steelblue")) +
+  labs(title = "Selected variables as lambda increases",
+       x = "Variables",
+       y = "log(Lambda)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+```
+Optimal value of lambda and optimal number of coefficients(the "best" parameter lambda has been chosen through the cross validation process ) (only 12 out of 22 have been selected by the lasso)
+```{r}
+best_lambda_1se <- cv_lasso$lambda.1se
+print(log(best_lambda_1se))
+best_coefs_1se <- coef(cv_lasso, s = "lambda.1se")
+print(best_coefs_1se)
+best_coefs_df_1se <- as.data.frame(as.matrix(best_coefs_1se))
+names(best_coefs_df_1se) <- "Coefficient"
+best_coefs_df_1se$Variable <- rownames(best_coefs_df_1se)
+selected_vars_1se <- subset(best_coefs_df_1se, Coefficient != 0)
+print(selected_vars_1se)
+```
+
+
+```{r}
+ggplot(selected_vars_1se, aes(x = reorder(Variable, Coefficient), y = Coefficient)) +
+  geom_col(fill = "#4682B4") +
+  coord_flip() +
+  labs(title = "Selected variables coefficients", 
+       x = "Variable", 
+       y = "Coefficient") +
+  theme_minimal()
+```
+Computing the glm with the number of coefficients obtained by the lasso (All coefficients are statistically significant!)
+```{r}
+logit_lasso_model <- glm(smoking ~ height.cm.+weight.kg.+systolic+fasting.blood.sugar+Cholesterol+triglyceride+HDL+hemoglobin+AST+ALT+Gtp+dental.caries, data = train, family = "binomial")
+summary(logit_lasso_model)
+```
+
+Confusion matrix and accuracy - reduced model (accuracy is slightly better but not that much)
+```{r}
+pred_prob_lasso <- predict(logit_lasso_model, newdata = test, type = "response")
+pred_class_lasso <- ifelse(pred_prob_lasso > 0.5, 1, 0)                           #trashold at 0,5
+conf_matrix_lasso <- table(Predicted = pred_class_lasso, Actual = test$smoking)
+print(conf_matrix_lasso)
+accuracy_lasso <- sum(diag(conf_matrix_lasso)) / sum(conf_matrix_lasso)
+cat("Accuracy:", round(accuracy_lasso, 4), "\n")
+```
+
+ROC curve reduced model (area under the curve improved by a very small quantity)
+```{r}
+roc_lasso <- roc(test$smoking, pred_prob_lasso)
+plot(roc_lasso, col = "blue", lwd = 2, main = "ROC Curve - Logistic Regression (LASSO)")
+abline(a = 0, b = 1, lty = 2, col = "gray")
+auc_value_lasso <- auc(roc_lasso)
+text(0.6, 0.2, paste0("AUC = ", round(auc_value_lasso, 3)), col = "red", cex = 1.2)
+```
+
+Phi coefficient - reduced model (also the phi has increased but not that much)
+```{r}
+TP_reduced <- 3008
+TN_reduced <- 7041
+FP_reduced <- 1592
+FN_reduced <- 2003
+
+phi_lasso <- (TP * TN - FP * FN) / sqrt((TP + FP) * (TP + FN) * (TN + FP) * (TN + FN))
+
+cat("Phi Coefficient:", round(phi_lasso, 4), "\n")
+```
+
+Decision tree: full vs reduced tree
+Complete tree is not useful because we have a lot of variables and it is very difficult to interpret
+```{r}
+tree_full <- rpart(
+  smoking ~ ., 
+  data = train, 
+  method = "class",
+  control = rpart.control(cp = 0.0001)
+)
+
+rpart.plot(tree_full)
+```
+Confusion matrix and accuracy of the complete tree
+```{r}
+pred_full_class <- predict(tree_full, newdata = test, type = "class")
+pred_full_prob <- predict(tree_full, newdata = test, type = "prob")[,2]
+cm_full <- table(Predicted = pred_full_class, Actual = test$smoking)
+accuracy_full <- sum(diag(cm_full)) / sum(cm_full)
+print(cm_full)
+print(accuracy_full)
+```
+
+ROC curve of the complete tree
+```{r}
+roc_full <- roc(test$smoking, pred_full_prob)
+plot(roc_full, col = "blue", main = "ROC Curve Full Tree", legacy.axes = TRUE)
+legend("bottomright", legend = paste0("AUC = ", round(auc(roc_full), 3)), col = "blue", lwd = 2)
+```
+
+Phi coefficient
+```{r}
+TP_full <- as.numeric(cm_full[2,2])
+TN_full <- as.numeric(cm_full[1,1])
+FP_full <- as.numeric(cm_full[2,1])
+FN_full <- as.numeric(cm_full[1,2])
+
+phi_full <- (TP_full * TN_full - FP_full * FN_full) / 
+             sqrt((TP_full + FP_full) * (TP_full + FN_full) * (TN_full + FP_full) * (TN_full + FN_full))
+phi_full
+```
+
+Trying to cut the tree with different approaches
+Seeing the values of cp in order to cut the tree
+-Best cp method(min value)
+```{r}
+printcp(tree_full)   
+plotcp(tree_full)    #plot to see the cp values: choosing the min to cut the tree
+best_cp <- tree_full$cptable[which.min(tree_full$cptable[,"xerror"]), "CP"]
+best_cp
+```
+Pruned tree according thhe the lowest cp value
+```{r}
+tree_pruned_min_cp <- prune(tree_full, cp = best_cp)
+rpart.plot(tree_pruned_min_cp, main = "Pruned decision tree according to min cp")
+```
+
+
+
+-1-se rule method
+The graph is still not that interpretable, we can then choose another level of cp according the the 1-se rule
+```{r}
+cptable <- tree_full$cptable
+min_error <- min(cptable[,"xerror"])
+se_min_error <- cptable[which.min(cptable[,"xerror"]), "xstd"]
+threshold <- min_error + se_min_error
+best_cp_1se <- cptable[cptable[,"xerror"] <= threshold, ][1, "CP"]
+best_cp_1se
+
+tree_pruned_1se <- prune(tree_full, cp = best_cp_1se)
+rpart.plot(tree_pruned_1se, main = "Pruned tree according to 1-se rule")
+```
+
+Confusion matrices and accuracy of the 2 methods
+```{r}
+pred_min_cp_class <- predict(tree_pruned_min_cp, newdata = test, type = "class")
+pred_1se_class <- predict(tree_pruned_1se, newdata = test, type = "class")
+pred_min_cp_prob <- predict(tree_pruned_min_cp, newdata = test, type = "prob")[,2]
+pred_1se_prob <- predict(tree_pruned_1se, newdata = test, type = "prob")[,2]
+cm_min_cp <- table(Predicted = pred_min_cp_class, Actual = test$smoking)
+accuracy_min_cp <- sum(diag(cm_min_cp)) / sum(cm_min_cp)
+cm_1se <- table(Predicted = pred_1se_class, Actual = test$smoking)
+accuracy_1se <- sum(diag(cm_1se)) / sum(cm_1se)
+cm_min_cp
+accuracy_min_cp
+cm_1se
+accuracy_1se
+```
+
+Roc curves and AUC of the 2 methods
+```{r}
+roc_min_cp <- roc(test$smoking, pred_min_cp_prob)
+plot(roc_min_cp, col = "red", main = "ROC Curve - Tree lowest cp", legacy.axes = TRUE)
+legend("bottomright", legend = paste0("AUC = ", round(auc(roc_min_cp), 3)), col = "red", lwd = 2)
+
+roc_1se <- roc(test$smoking, pred_1se_prob)
+plot(roc_1se, col = "green", main = "ROC Curve - Tree 1SE", legacy.axes = TRUE)
+legend("bottomright", legend = paste0("AUC = ", round(auc(roc_1se), 3)), col = "green", lwd = 2)
+
+```
+Phi coefficients
+```{r}
+TP_min_cp <- as.numeric(cm_min_cp[2,2])
+TN_min_cp <- as.numeric(cm_min_cp[1,1])
+FP_min_cp <- as.numeric(cm_min_cp[2,1])
+FN_min_cp <- as.numeric(cm_min_cp[1,2])
+
+phi_min_cp <- (TP_min_cp * TN_min_cp - FP_min_cp * FN_min_cp) /
+              sqrt((TP_min_cp + FP_min_cp) * (TP_min_cp + FN_min_cp) * (TN_min_cp + FP_min_cp) * (TN_min_cp + FN_min_cp))
+
+
+TP_1se <- as.numeric(cm_1se[2,2])
+TN_1se <- as.numeric(cm_1se[1,1])
+FP_1se <- as.numeric(cm_1se[2,1])
+FN_1se <- as.numeric(cm_1se[1,2])
+
+phi_1se <- (TP_1se * TN_1se - FP_1se * FN_1se) /
+           sqrt((TP_1se + FP_1se) * (TP_1se + FN_1se) * (TN_1se + FP_1se) * (TN_1se + FN_1se))
+
+phi_min_cp
+phi_1se
+```
+
+
+
+Since the result are not that interpretable, the idea was to try cutting at another level of cp arbitrary chosen
+Simpler tree pruned at cp=0,003
+```{r}
+tree_pruned_more <- prune(tree_full, cp = 0.003)  # oppure 0.02, 0.03...
+rpart.plot(tree_pruned_more, main = "Simpler Pruned Tree (cp = 0.003)")
+```
+Conf matrix and accuracy of the simpler tree
+We see accuracy doesn't decrease a lot, so it can be useful to use this model because it is much more readable
+```{r}
+pred_tree_pruned_more_class <- predict(tree_pruned_more, newdata = test, type = "class")
+pred_tree_pruned_more_prob <- predict(tree_pruned_more, newdata = test, type = "prob")[,2]
+cm_tree_pruned_more <- table(Predicted = pred_tree_pruned_more_class, Actual = test$smoking)
+accuracy_tree_pruned_more <- sum(diag(cm_tree_pruned_more)) / sum(cm_tree_pruned_more)
+print(cm_tree_pruned_more)
+print(accuracy_tree_pruned_more)
+```
+
+ROC curve and AUC - simpler tree (also AUC doesn't decrease that much so we can use this tree)
+```{r}
+roc_tree_pruned_more <- roc(test$smoking, pred_tree_pruned_more_prob)
+plot(roc_tree_pruned_more, col = "orange", main = "ROC Curve - Simpler Tree", legacy.axes = TRUE)
+legend("bottomright", legend = paste0("AUC = ", round(auc(roc_tree_pruned_more), 3)), col = "orange", lwd = 2)
+```
+Phi coefficient - simpler tree
+Also the phi coefficient is pretty much the same, so cutting at cp=0,003 is a very good choice if we want to interpret more easily the graphical result
+```{r}
+TP_sim_tree <- as.numeric(cm_tree_pruned_more[2,2])
+TN_sim_tree <- as.numeric(cm_tree_pruned_more[1,1])
+FP_sim_tree <- as.numeric(cm_tree_pruned_more[2,1])
+FN_sim_tree <- as.numeric(cm_tree_pruned_more[1,2])
+
+phi_min_cp <- (TP_sim_tree * TN_sim_tree - FP_sim_tree * FN_sim_tree) /
+              sqrt((TP_sim_tree + FP_sim_tree) * (TP_sim_tree + FN_sim_tree) * (TN_sim_tree + FP_sim_tree) * (TN_sim_tree + FN_sim_tree))
+
+phi_min_cp
+```
+
